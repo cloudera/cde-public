@@ -3,13 +3,14 @@
 This script simplifies the collection of diagnostic data from running CDE services and virtual clusters. Currently it can
 collect the following information:
 
+* Status of all AWS cloud resources created during CDE provisioning
 * Kubernetes statuses for core CDE components and virtual clusters
 * Kubernetes logs for all CDE pods, excluding Spark pods
+* Composing above into a compressed diagnostic bundle 
 
 Planned additions:
 
 * Collecting archived logs from object storage
-* Composing all collections into a diagnostic bundle which can be shared with Cloudera Support
 
 *Note*: This script is a temporary solution while we build a full diagnostics collection capability into the product.
 
@@ -34,9 +35,13 @@ The following programs must be on the `PATH` when running the script:
 #### Authentication to EKS
 
 The script will require an AWS IAM user with programmatic access (an access key ID and a secret key). The user
-must have appropriate access to the EKS cluster. Currently the only supported method is to add the user as a 
-"Trusted Entity" on the admin role which was used to create the CDE service. This
-is the cross-account role that was used when setting up your CDP environment. To add the IAM user:
+must have appropriate access to the EKS cluster. 
+
+This means either the user has been added as an admin in the "Access" tab of the environment details in the CDE
+management console (strongly recommended) or the user has been added as a "Trusted Entity" on the admin role which was used to create the CDE service (not recommended). This
+is the cross-account role that was used when setting up your CDP environment. 
+
+To add the IAM user as a trusted entity (not recommended):
 
 * Go to the AWS IAM console, then navigate to "Users"
 * Find and select the user and copy and paste its ARN value
@@ -54,8 +59,6 @@ is the cross-account role that was used when setting up your CDP environment. To
     }
 ```
 * Note the role ARN of the cross-account role. You will need to supply this during diagnostics collection
-
-[comment]: # TODO -- add instructions for admin users added via Control Plane API
 
 #### Access to EKS
 
@@ -79,11 +82,14 @@ Copy or paste the contents of the file into a file on the system where you wish 
 
 ## Installation
 
-Currently the easiest way to install the tool is to download a release from the temporary Github repo:
+Currently the easiest way to install the tool is to download a release from the public Github repo:
 
-https://github.com/ianbuss/cde-diagnostics
+```
+curl -LO https://raw.githubusercontent.com/cloudera/cde-public/master/diagnostics/cde_diagnostics
+chmod u+x cde_diagnostics
+```
 
-Once the release has been expanded, the script can be bootstrapped as follows:
+Once the script has been downloaded, the script can be bootstrapped as follows:
 
 ```
 ./cde_diagnostics install
@@ -101,8 +107,10 @@ During the bootstrap process an AWS user is configured. This user should have th
 To gather the statuses of all CDE components running in the Kubernetes cluster, run the following:
 
 ```
-./cde_diagnostics -r <ROLE_ARN> -k <KUBECONFIG_FILE> status
+./cde_diagnostics [-r <ROLE_ARN>] -k <KUBECONFIG_FILE> status
 ```
+
+**Note**: the `-r <ROLE_ARN>` is only required if using the non-recommended assume-role approach.
 
 This will print all the status information for both base CDE components running in the `dex` namespace
 and that of the service pods in the virtual clusters. For extended information add either `-f yaml` or
