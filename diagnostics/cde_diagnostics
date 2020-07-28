@@ -1,0 +1,499 @@
+#!/bin/bash
+
+## Global vars
+
+# Internal vars
+BIN_DIR=$(dirname "${BASH_SOURCE[0]}")
+TOOLS_DIR=${BIN_DIR}/tools
+OUTPUT_FORMAT=wide
+KUBE_VERSION=1.14.0
+PATH=${TOOLS_DIR}:${PATH}
+
+# Vars for sub-programs
+export AWS_CONFIG_FILE=${TOOLS_DIR}/.aws/config
+export AWS_SHARED_CREDENTIALS_FILE=${TOOLS_DIR}/.aws/credentials
+export AWS_PROFILE=default # because we're using an isolated aws config file
+export TILLER_NAMESPACE=tiller
+
+## Utility functions
+
+print() {
+    local HIGHLIGHT_COLOR="\033[32m"
+    local RESET_COLOR="\033[0m"
+    echo -ne ${HIGHLIGHT_COLOR}
+    echo -e "$@"
+    echo -ne ${RESET_COLOR}
+}
+
+error() {
+    local HIGHLIGHT_COLOR="\033[31m"
+    local RESET_COLOR="\033[0m"
+    echo -ne ${HIGHLIGHT_COLOR}
+    echo -e "Error: $@"
+    echo -ne ${RESET_COLOR}
+}
+
+run_and_check() {
+    cmd="$1"
+    errmsg="$2"
+    output=$(eval ${cmd} 2>&1)
+    code=$?
+    if [[ ${code} != 0 ]]; then
+        error "Command '${cmd}' failed with exit code ${code}"
+        error "Command output:" ${output}
+        if [[ -n ${errmsg} ]]; then
+            error "${errmsg}"
+        fi
+        exit 1
+    fi
+}
+
+run_and_return() {
+    cmd="$1"
+    log="$2"
+    output=$(eval ${cmd} 2>&1)
+    code=$?
+    if [[ -n ${log} ]]; then
+        if [[ ${code} != 0 ]]; then
+            error ${output}
+        else
+            echo -e ${output}
+        fi
+    fi
+    return ${code}
+}
+
+read_cluster_details() {
+    if [[ -n ${CLUSTERDETAILS} ]]; then
+        CLUSTER_ID=$(cat ${CLUSTERDETAILS} | jq -r '.id')
+        CLUSTER_PROV_ID=$(cat ${CLUSTERDETAILS} | jq -r '.provisionerid')
+        CLUSTER_LOGS=$(cat ${CLUSTERDETAILS} | jq -r '.clusterInfo.LogLocation')
+        CLOUD_PLATFORM=$(cat ${CLUSTERDETAILS} | jq -r '.clusterInfo.CloudPlatform')
+    fi
+}
+
+authenticate() {
+    if [[ -n ${ASSUME_ROLE} ]]; then
+        print Authenticating as ${ASSUME_ROLE} using ${AWS_SHARED_CREDENTIALS_FILE}
+        unset AWS_SESSION_TOKEN
+        unset AWS_SECRET_ACCESS_KEY
+        unset AWS_ACCESS_KEY_ID
+        MUST_AUTH=false
+        if [[ ! -f ${TOOLS_DIR}/.aws/session ]]; then
+            MUST_AUTH=true
+        else
+            # validate it is json content before checking expiry
+            if run_and_return "cat ${TOOLS_DIR}/.aws/session | python -mjson.tool"; then
+                AUTH_EXPIRY=$(cat ${TOOLS_DIR}/.aws/session | python -c "import sys, json; print(json.load(sys.stdin)['Credentials']['Expiration'])")
+                local now=$(date +%s)
+                local exp=$(date -d "${AUTH_EXPIRY}" +%s)
+                if (( $exp < $now )); then
+                    print Existing session has expired, re-authenticating
+                    MUST_AUTH=true
+                else
+                    print Using existing session
+                fi
+            else
+                MUST_AUTH=true
+            fi
+        fi
+        if [[ ${MUST_AUTH} == "true" ]]; then
+            run_and_check "aws sts assume-role --role-arn ${ASSUME_ROLE} --role-session-name cdediagsess > ${TOOLS_DIR}/.aws/session"
+            export AWS_ACCESS_KEY_ID=$(cat ${TOOLS_DIR}/.aws/session | python -c "import sys, json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
+            export AWS_SECRET_ACCESS_KEY=$(cat ${TOOLS_DIR}/.aws/session | python -c "import sys, json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
+            export AWS_SESSION_TOKEN=$(cat ${TOOLS_DIR}/.aws/session | python -c "import sys, json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
+        fi
+    fi
+}
+
+## Core functions
+
+bootstrap() {
+    print "Creating CDE tools directory at ${TOOLS_DIR}"
+    run_and_check "mkdir -p ${TOOLS_DIR}"
+    print "Checking prerequisites"
+    # which -- this script
+    # unzip -- this script
+    # python -- aws cli
+    # curl -- this script
+    # groff -- aws cli
+    # date -- this script
+    for prog in which unzip tar python curl groff date; do
+        run_and_check "which ${prog}" "Program '${prog}' is required on the PATH; please install with your package manager"
+    done
+    print "Installing kubectl tool v${KUBE_VERSION}"
+    if [[ ! -f ${TOOLS_DIR}/kubectl ]]; then
+        run_and_check "curl -L -o ${TOOLS_DIR}/kubectl https://storage.googleapis.com/kubernetes-release/release/v${KUBE_VERSION}/bin/linux/amd64/kubectl"
+        run_and_check "chmod u+x ${TOOLS_DIR}/kubectl"
+        run_and_check "${TOOLS_DIR}/kubectl version --client"
+    fi
+    print "Installing AWS CLI tool v2"
+    if [[ ! -f ${TOOLS_DIR}/aws ]]; then
+        run_and_check "mkdir -p ${TOOLS_DIR}/awscli"
+        run_and_check "curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o ${TOOLS_DIR}/awscli/awscliv2.zip"
+        run_and_check "unzip -d ${TOOLS_DIR}/awscli ${TOOLS_DIR}/awscli/awscliv2.zip"
+        run_and_check "cd ${TOOLS_DIR}/awscli && ./aws/install --install-dir \$(pwd) --bin-dir ../"
+        run_and_check "${TOOLS_DIR}/aws --version"
+    fi
+    # needs interactive input so cannot use run_and_check
+    print "Configuring AWS CLI"
+    unset AWS_PROFILE
+    ${TOOLS_DIR}/aws configure
+    if [[ $? != 0 ]]; then
+        error "AWS CLI configure failed: ${awsout}"
+        exit 1
+    fi
+    print "Installing AWS IAM Authenticator v1.17.7"
+    if [[ ! -f ${TOOLS_DIR}/aws-iam-authenticator ]]; then
+        run_and_check "curl -o ${TOOLS_DIR}/aws-iam-authenticator https://amazon-eks.s3.us-west-2.amazonaws.com/1.17.7/2020-07-08/bin/linux/amd64/aws-iam-authenticator"
+        run_and_check "chmod u+x ${TOOLS_DIR}/aws-iam-authenticator"
+        run_and_check "${TOOLS_DIR}/aws-iam-authenticator version"
+    fi
+    print "Installing jq v1.6"
+    if [[ ! -f ${TOOLS_DIR}/jq ]]; then
+        run_and_check "curl -L -o ${TOOLS_DIR}/jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64"
+        run_and_check "chmod u+x ${TOOLS_DIR}/jq"
+        run_and_check "${TOOLS_DIR}/jq --version"
+    fi
+    print "Installing k9s v0.21.2"
+    if [[ ! -f ${TOOLS_DIR}/k9s ]]; then
+        run_and_check "mkdir -p ${TOOLS_DIR}/k9stool"
+        run_and_check "curl -L -o ${TOOLS_DIR}/k9stool/k9s.tar.gz https://github.com/derailed/k9s/releases/download/v0.21.2/k9s_Linux_x86_64.tar.gz"
+        run_and_check "tar -C ${TOOLS_DIR}/k9stool -xzf ${TOOLS_DIR}/k9stool/k9s.tar.gz"
+        run_and_check "ln -s ./k9stool/k9s ${TOOLS_DIR}/k9s"
+    fi
+    print "Installing Helm client v2.14.2"
+    if [[ ! -f ${TOOLS_DIR}/helm ]]; then
+        run_and_check "mkdir -p ${TOOLS_DIR}/helmtool"
+        run_and_check "curl -L -o ${TOOLS_DIR}/helmtool/helm-v2.14.2.tar.gz https://get.helm.sh/helm-v2.14.2-linux-amd64.tar.gz"
+        run_and_check "tar -C ${TOOLS_DIR}/helmtool -xzf ${TOOLS_DIR}/helmtool/helm-v2.14.2.tar.gz"
+        run_and_check "ln -s ./helmtool/linux-amd64/helm ${TOOLS_DIR}/helm"
+    fi
+}
+
+_virtual_clusters() {
+    VIRTUAL_CLUSTERS=$(KUBECONFIG=${KUBECONFIG} kubectl get ns -o wide | grep -oe "dex-app-[0-9a-z]\+")
+}
+
+_aws_status() {
+    local cluster=$1
+    # EKS
+    print "status::${CLUSTER_ID}::AWS::EKS"
+    aws eks describe-cluster --name ${CLUSTER_PROV_ID} | jq -M
+    # RDS
+    print "status::${CLUSTER_ID}::AWS::RDS"
+    aws rds describe-db-instances --db-instance-identifier ${CLUSTER_ID} | jq -M
+    # EFS
+    print "status::${CLUSTER_ID}::AWS::EFS"
+    aws efs describe-file-systems --creation-token ${CLUSTER_ID} | jq -M
+    # ELB
+    print "status::${CLUSTER_ID}::AWS::ELB"
+    local LBS=$(aws elb describe-load-balancers | jq -r '.LoadBalancerDescriptions[] | .LoadBalancerName')
+    local LB=$(aws elb describe-tags --load-balancer-names ${LBS} | jq -r ".TagDescriptions[] | select(.Tags[]?.Key == \"kubernetes.io/cluster/${CLUSTER_PROV_ID}\").LoadBalancerName")
+    aws elb describe-load-balancers --load-balancer-names ${LB} | jq -M
+}
+
+status() {
+    if [[ -z ${KUBECONFIG} ]]; then
+        error "Specify a kubeconfig file with -k or via the KUBECONFIG environment variable"
+        exit 1
+    fi
+    authenticate
+    read_cluster_details
+    # Cloud resource status
+    if [[ -n ${CLUSTER_ID} ]]; then
+        case ${CLOUD_PLATFORM} in
+            AWS)
+                _aws_status ${CLUSTER_ID}
+                ;;
+            *)
+                print "Cloud provider ${CLOUD_PLATFORM} not supported by this script, skipping cloud object status"
+                ;;
+        esac
+    else
+        print "No cluster ID found, skipping cloud object status"
+    fi
+    # Helm status
+    print "status::helm"
+    KUBECONFIG=${KUBECONFIG} helm ls
+    # Kubernetes status
+    for ns in dex monitoring yunikorn; do
+        for object in deployments pods services ingresses configmaps; do
+            print "${ns}::${object}"
+            KUBECONFIG=${KUBECONFIG} kubectl get ${object} -n ${ns} -o ${OUTPUT_FORMAT}
+        done
+    done
+    _virtual_clusters
+    for vc in ${VIRTUAL_CLUSTERS}; do
+        for object in deployments pods services ingresses configmaps; do
+            print "${vc}::${object}"
+            KUBECONFIG=${KUBECONFIG} kubectl get ${object} -n ${vc} -l "app.kubernetes.io/instance=${vc}" -o ${OUTPUT_FORMAT}
+            # airflow pods have a different label set
+            KUBECONFIG=${KUBECONFIG} kubectl get ${object} -n ${vc} -l "app=airflow,release=${vc}" -o ${OUTPUT_FORMAT}
+        done
+    done
+}
+
+_podlogs() {
+    local ns="$1"
+    local selector="$2"
+    if [[ -n ${selector} ]]; then
+        selector="-l ${selector}"
+    fi
+    pods=$(KUBECONFIG=${KUBECONFIG} kubectl get pods -n ${ns} ${selector} -o jsonpath='{$.items[*].metadata.name}')
+    for p in ${pods}; do
+        local containers=$(KUBECONFIG=${KUBECONFIG} kubectl get pod -o jsonpath={.spec.containers[*].name} -n ${ns} ${p})
+        containers="$(KUBECONFIG=${KUBECONFIG} kubectl get pod -n ${ns} ${p} -o jsonpath='{$.spec.initContainers[*].name}') ${containers}"
+        for c in ${containers}; do
+            print "logs::${ns}::${p}::${c}"
+            local kcmd="KUBECONFIG=${KUBECONFIG} kubectl logs -n ${ns} ${p} -c ${c}"
+            if [[ -n ${OUTDIR} ]]; then
+                eval ${kcmd} > ${OUTDIR}/${p}_${c}.log
+            else
+                eval ${kcmd}
+            fi
+        done
+    done
+}
+
+logs() {
+    if [[ -z ${KUBECONFIG} ]]; then
+        error "Specify a kubeconfig file with -k or via the KUBECONFIG environment variable"
+        exit 1
+    fi
+    authenticate
+    if [[ -n ${OUTDIR} ]]; then print Writing logs to ${OUTDIR}; fi
+    for ns in dex monitoring yunikorn; do
+        print "logs::${ns}"
+        _podlogs ${ns}
+    done
+    _virtual_clusters
+    for vc in ${VIRTUAL_CLUSTERS}; do
+        print "logs::${vc}"
+        _podlogs ${vc} "app.kubernetes.io/instance=${vc}"
+    done
+
+}
+
+kcommand() {
+    if [[ -z ${KUBECONFIG} ]]; then
+        error "Specify a kubeconfig file with -k or via the KUBECONFIG environment variable"
+        exit 1
+    fi
+    authenticate
+    eval KUBECONFIG=${KUBECONFIG} ${ARGS}
+}
+
+bundle() {
+    # override outdir
+    if [[ -z ${OUTDIR} ]]; then
+        OUTDIR=/tmp
+    fi
+    BUNDLEPARENT=${OUTDIR}
+    BUNDLEDIR="cde_diagnostics_$(date +%Y%m%d-%H%M%S)"
+    print Writing diagnostic bundle to ${BUNDLEPARENT}/${BUNDLEDIR}
+    OUTDIR="${BUNDLEPARENT}/${BUNDLEDIR}/logs"
+    run_and_check "mkdir -p ${OUTDIR}"
+    print Collecting CDE status
+    status > ${BUNDLEPARENT}/${BUNDLEDIR}/status.out 2>&1
+    print Collecting Kubernetes logs
+    logs
+    print Compressing bundle
+    run_and_check "tar -C ${BUNDLEPARENT} -czf ${BUNDLEPARENT}/${BUNDLEDIR}.tar.gz ${BUNDLEDIR}"
+    run_and_check "rm -rf ${BUNDLEPARENT}/${BUNDLEDIR}"
+    print Diagnostic bundle available at ${BUNDLEPARENT}/${BUNDLEDIR}.tar.gz
+}
+
+## Command line processing
+
+help() {
+    echo "$(basename $0) 
+Runs diagnostic tools for a CDE installation.
+        
+Commands:
+    install                 Bootstraps the programs and utilities needed to run diagnostics
+    command                 Run a command while authenticated to the Kubernetes cluster
+                            Command args should be specified after '--'
+    status                  Prints status for all CDE Kubernetes components
+    logs                    Gets logs of CDE components. Currently this collects Kubernetes container logs only
+    bundle                  Collect a diagnostic bundle
+
+Options:
+    -h --help               This help output
+    -c --cluster            The location of a json file containing details of the CDE cluster
+                            This file should be retrieved from the CDE Management Console API
+    -k --kubeconfig         The location of a kubeconfig file. Alternatively set the KUBECONFIG env var
+                            The kubeconfig file should be retrieved from the CDE Management Console
+    -f --format             Output format for Kubernetes status. Valid formats: wide, yaml, json
+    -o --outdir             Write the output of the command or bundle into the specified directory
+    -r --assume-role        The AWS ARN of the role to be assumed when issuing commands
+
+Examples:
+    # Get CDE status using 
+    $(basename $0) -k ~/.kube/config1 -r <cross-account-role-arn> status
+
+    # Get CDE status in json and save to file
+    $(basename $0) -k ~/.kube/config1 -r <cross-account-role-arn> -f json status > /tmp/$(date +%s).cde.status.out
+
+    # Get CDE logs and pipe to gzip
+    $(basename $0) -k ~/.kube/config1 -r <cross-account-role-arn> logs | gzip > /tmp/$(date +%s).cde.logs.gz
+
+    # Run kubectl command
+    $(basename $0) -k ~/.kube/config1 -r <cross-account-role-arn> command -- kubectl get nodes
+
+    # Collect a diagnostic bundle
+    $(basename $0) -k ~/.kube/config1 -r <cross-account-role-arn> bundle
+"
+}
+
+invalid_arg() {
+    echo "invalid argument: $1"
+    help
+}
+
+#
+# handle command line arguments
+#
+if [ $# -eq 0 ]; then 
+    help
+    exit 1
+fi
+
+## Command line processing
+PARAMS=()
+ARGS=""
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "${key}" in
+        -h|--help)
+            shift # past argument
+            help
+            exit 0
+            ;;
+
+        -k|--kubeconfig)
+            if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+                KUBECONFIG=$2
+                shift 2 # past argument and value
+                if [[ ! -f ${KUBECONFIG} ]]; then
+                    error "Specified KUBECONFIG file '${KUBECONFIG}' does not exist"
+                    exit 1
+                fi
+            else
+                error "Argument for ${key} is missing"
+                exit 1
+            fi
+            ;;
+        
+        -c|--cluster)
+            if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+                CLUSTERDETAILS=$2
+                shift 2 # past argument and value
+                if [[ ! -f ${CLUSTERDETAILS} ]]; then
+                    error "Specified cluster details file '${CLUSTERDETAILS}' does not exist"
+                    exit 1
+                fi
+            else
+                error "Argument for ${key} is missing"
+                exit 1
+            fi
+            ;;
+        
+        -o|--outdir)
+            if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+                OUTDIR=$2
+                shift 2 # past argument and value
+                if [[ -d ${OUTDIR} ]]; then
+                    error "Specified output directory '${OUTDIR}' exists and is not a directory"
+                    exit 1
+                fi
+                run_and_check "mkdir -p ${OUTDIR}"
+            else
+                error "Argument for ${key} is missing"
+                exit 1
+            fi
+            ;;
+        
+        -r|--assume-role)
+            if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+                ASSUME_ROLE=$2
+                shift 2 # past argument and value
+            else
+                error "Argument for ${key} is missing"
+                exit 1
+            fi
+            ;;
+
+        -f|--format)
+            if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+                OUTPUT_FORMAT=$2
+                shift 2 # past argument and value
+                case $OUTPUT_FORMAT in
+                    wide|yaml|json)
+                    ;;
+
+                    *)
+                    error "Output format must be 'wide', 'json' or 'yaml'"
+                    exit 1
+                esac
+            else
+                error "Argument for ${key} is missing"
+                exit 1
+            fi
+            ;;
+
+        --)
+            # Stop processing args and collect remaining args into a variable
+            shift
+            while [[ $# -gt 0 ]]; do
+                ARGS="${ARGS} ${1}"
+                shift
+            done
+            ;;
+
+        -*|--*=) # unsupported flags
+            error "Unsupported flag ${key}"
+            exit 1
+            ;;
+
+        *) # preserve positional arguments
+            PARAMS+=(${key})
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#PARAMS[@]} -gt 1 || ${#PARAMS[@]} -eq 0 ]]; then
+    error "A single command must be specified, found ${#PARAMS[@]}"
+    help
+    exit 1
+fi
+
+case "${PARAMS[0]}" in
+    install)
+        bootstrap
+        ;;
+    status)
+        status
+        ;;
+    logs)
+        logs
+        ;;
+    command)
+        if [[ -z ${ARGS} ]]; then
+            error "No arguments supplied for command"
+            help
+            exit 1
+        fi
+        kcommand
+        ;;
+    bundle)
+        bundle
+        ;;
+    *)
+        error "Unrecognized command ${PARAMS[0]}"
+        help
+        exit 1
+        ;;
+esac
+exit 0
