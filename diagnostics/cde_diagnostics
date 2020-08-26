@@ -218,7 +218,7 @@ status() {
     KUBECONFIG=${KUBECONFIG} helm ls
     # Kubernetes status
     for ns in dex monitoring yunikorn; do
-        for object in deployments pods services ingresses configmaps; do
+        for object in events deployments pods services ingresses configmaps; do
             print "${ns}::${object}"
             KUBECONFIG=${KUBECONFIG} kubectl get ${object} -n ${ns} -o ${OUTPUT_FORMAT}
         done
