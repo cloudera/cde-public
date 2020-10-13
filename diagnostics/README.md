@@ -37,28 +37,8 @@ The following programs must be on the `PATH` when running the script:
 The script will require an AWS IAM user with programmatic access (an access key ID and a secret key). The user
 must have appropriate access to the EKS cluster. 
 
-This means either the user has been added as an admin in the "Access" tab of the environment details in the CDE
-management console (strongly recommended) or the user has been added as a "Trusted Entity" on the admin role which was used to create the CDE service (not recommended). This
-is the cross-account role that was used when setting up your CDP environment. 
-
-To add the IAM user as a trusted entity (not recommended):
-
-* Go to the AWS IAM console, then navigate to "Users"
-* Find and select the user and copy and paste its ARN value
-* Go to the AWS IAM console, then navigate to "Roles" 
-* Find and select the cross-account role and click the "Trust relationships" tab
-* Click "Edit trust relationship"
-* Add the following snippet to the JSON, replacing `<USER_ARN>` with the user's ARN copied above
-```
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "<USER_ARN>"
-      },
-      "Action": "sts:AssumeRole"
-    }
-```
-* Note the role ARN of the cross-account role. You will need to supply this during diagnostics collection
+This means the user ARN has been added as an admin in the "Access" tab of the environment details in the CDE
+management console.
 
 #### Access to EKS
 
@@ -107,10 +87,8 @@ During the bootstrap process an AWS user is configured. This user should have th
 To gather the statuses of all CDE components running in the Kubernetes cluster, run the following:
 
 ```
-./cde_diagnostics [-r <ROLE_ARN>] -k <KUBECONFIG_FILE> status
+./cde_diagnostics -k <KUBECONFIG_FILE> status
 ```
-
-**Note**: the `-r <ROLE_ARN>` is only required if using the non-recommended assume-role approach.
 
 This will print all the status information for both base CDE components running in the `dex` namespace
 and that of the service pods in the virtual clusters. For extended information add either `-f yaml` or
@@ -122,12 +100,12 @@ The following command will capture logs from all containers in all running CDE p
 and Airflow worker pods*:
 
 ```
-./cde_diagnostics -r <ROLE_ARN> -k <KUBECONFIG_FILE> logs
+./cde_diagnostics -k <KUBECONFIG_FILE> logs
 ```
 
 The quantity of output is often large, so it is recommended to pipe this to an output file for review. To limit
 the file size the file can be compressed as follows:
 
 ```
-./cde_diagnostics -r <ROLE_ARN> -k <KUBECONFIG_FILE> logs | gzip > /tmp/logoutput.gz
+./cde_diagnostics -k <KUBECONFIG_FILE> logs | gzip > /tmp/logoutput.gz
 ```
