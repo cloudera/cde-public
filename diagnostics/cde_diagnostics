@@ -7,6 +7,7 @@ BIN_DIR=$(dirname "${BASH_SOURCE[0]}")
 TOOLS_DIR=${BIN_DIR}/tools
 OUTPUT_FORMAT=wide
 KUBE_VERSION=1.14.0
+HELM_VERSION=3.1.3
 PATH=${TOOLS_DIR}:${PATH}
 
 # Vars for sub-programs
@@ -162,11 +163,11 @@ bootstrap() {
         run_and_check "tar -C ${TOOLS_DIR}/k9stool -xzf ${TOOLS_DIR}/k9stool/k9s.tar.gz"
         run_and_check "ln -s ./k9stool/k9s ${TOOLS_DIR}/k9s"
     fi
-    print "Installing Helm client v2.14.2"
+    print "Installing Helm client v${HELM_VERSION}"
     if [[ ! -f ${TOOLS_DIR}/helm ]]; then
         run_and_check "mkdir -p ${TOOLS_DIR}/helmtool"
-        run_and_check "curl -L -o ${TOOLS_DIR}/helmtool/helm-v2.14.2.tar.gz https://get.helm.sh/helm-v2.14.2-linux-amd64.tar.gz"
-        run_and_check "tar -C ${TOOLS_DIR}/helmtool -xzf ${TOOLS_DIR}/helmtool/helm-v2.14.2.tar.gz"
+        run_and_check "curl -L -o ${TOOLS_DIR}/helmtool/helm-v${HELM_VERSION}.tar.gz https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+        run_and_check "tar -C ${TOOLS_DIR}/helmtool -xzf ${TOOLS_DIR}/helmtool/helm-v${HELM_VERSION}.tar.gz"
         run_and_check "ln -s ./helmtool/linux-amd64/helm ${TOOLS_DIR}/helm"
     fi
 }
@@ -215,7 +216,8 @@ status() {
     fi
     # Helm status
     print "status::helm"
-    KUBECONFIG=${KUBECONFIG} helm ls
+    helm version
+    KUBECONFIG=${KUBECONFIG} helm ls -A
     # Kubernetes status
     for ns in dex monitoring yunikorn; do
         for object in events deployments pods services ingresses configmaps; do

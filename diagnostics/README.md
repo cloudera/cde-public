@@ -62,12 +62,58 @@ Copy or paste the contents of the file into a file on the system where you wish 
 
 ## Installation
 
-Currently the easiest way to install the tool is to download a release from the public Github repo:
+You can use the diagnostics tool from your own Linux machine or setup a Docker Linux container as documented below.
+
+### Setup Linux Docker Container (optional)
+
+The following are basic instructions for setting up a Docker CentOS Linux image. You can also run the script on a standard Linux host, but the following dockerfile ensures the script's prerequisites are met.
+
+1. Create docker workspace in a directory of your choice.
+
+    ```
+    mkdir diagnostics
+    cd diagnostics
+    touch Dockerfile
+    ```
+
+1. Paste the following into "Dockerfile" and save it.
+
+   ```
+   FROM centos:centos8
+
+   RUN yum install -y unzip which python36
+   RUN ln -s /usr/bin/python3 /usr/bin/python
+   RUN curl -LO http://mirror.centos.org/centos/7/os/x86_64/Packages/groff-1.22.2-8.el7.x86_64.rpm
+   RUN curl -LO http://mirror.centos.org/centos/7/os/x86_64/Packages/groff-base-1.22.2-8.el7.x86_64.rpm
+   RUN rpm -i groff-base-1.22.2-8.el7.x86_64.rpm
+   RUN rpm -i groff-1.22.2-8.el7.x86_64.rpm
+   ```
+
+1. Build and run the Docker image
+
+   ```
+   export DIAGNOSTICS_IMAGE_TAG=cloudera/cde_diagnostics
+   # build it
+   docker build -t $DIAGNOSTICS_IMAGE_TAG .
+   # run it
+   docker run -it $DIAGNOSTICS_IMAGE_TAG /bin/bash
+   ```
+
+1. You should now have a shell into the Linux container from which to execute the CDE diagnostic commands. The next section details instructions for obtaining the diagnostic script and executing commands from your Linux host.
+
+### Tool Installation
+
+This step assumes you are running on a Linux host or container with the aforementioned tool prerequisites. Currently the easiest way to install the tool is to download a release from the public Github repo:
 
 ```
+cd ~
+# be sure to copy/paste your CDE service's kubeconfig in this file
+touch kubeconfig
 curl -LO https://raw.githubusercontent.com/cloudera/cde-public/master/diagnostics/cde_diagnostics
 chmod u+x cde_diagnostics
 ```
+
+Note: This tool is setup for Helm 3. If you are on an older version of CDE (<=1.0.1), you should modify the `HELM_VERSION` env var in `cde_diagnostics` and set it to `2.14.2`.
 
 Once the script has been downloaded, the script can be bootstrapped as follows:
 
@@ -109,3 +155,13 @@ the file size the file can be compressed as follows:
 ```
 ./cde_diagnostics -k <KUBECONFIG_FILE> logs | gzip > /tmp/logoutput.gz
 ```
+
+If using the Docker container as described above, you can copy the logs locally as follows:
+
+```
+# Find your container ID
+docker ps --filter "ancestor=$DIAGNOSTICS_IMAGE_TAG"
+# Use the container ID in the copy command
+docker cp <CONTAINER ID>:/tmp/logoutput.gz .
+```
+
