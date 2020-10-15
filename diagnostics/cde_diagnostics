@@ -163,12 +163,19 @@ bootstrap() {
         run_and_check "tar -C ${TOOLS_DIR}/k9stool -xzf ${TOOLS_DIR}/k9stool/k9s.tar.gz"
         run_and_check "ln -s ./k9stool/k9s ${TOOLS_DIR}/k9s"
     fi
+    if [[ -f ${TOOLS_DIR}/helm ]] && [[ "$(${TOOLS_DIR}/helm version -c --short|cut -d ':' -f 2|tr -d '[ |v]'|cut -d '+' -f 1)" != "${HELM_VERSION}" ]]; then
+        print "Existing outdated Helm client found. Removing."
+        run_and_check "rm ${TOOLS_DIR}/helm"
+        run_and_check "rm -rf ${TOOLS_DIR}/helmtool"
+    fi
     print "Installing Helm client v${HELM_VERSION}"
     if [[ ! -f ${TOOLS_DIR}/helm ]]; then
         run_and_check "mkdir -p ${TOOLS_DIR}/helmtool"
         run_and_check "curl -L -o ${TOOLS_DIR}/helmtool/helm-v${HELM_VERSION}.tar.gz https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
         run_and_check "tar -C ${TOOLS_DIR}/helmtool -xzf ${TOOLS_DIR}/helmtool/helm-v${HELM_VERSION}.tar.gz"
         run_and_check "ln -s ./helmtool/linux-amd64/helm ${TOOLS_DIR}/helm"
+    else
+        print "...Skipping - found existing up-to-date install."
     fi
 }
 
