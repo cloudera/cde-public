@@ -1,0 +1,668 @@
+apiVersion: v1
+data:
+  alerting_rules.yml: |
+    groups:
+    - name: general.rules
+      rules:
+      - alert: TargetDown
+        annotations:
+          message: '{{ printf "%.4g" $value }}% of the {{ $labels.job }} targets in {{
+            $labels.namespace }} namespace are down.'
+        expr: 100 * (count(up == 0) BY (job, namespace, service) / count(up) BY (job,
+          namespace, service)) > 10
+        for: 10m
+        labels:
+          severity: warning
+      - alert: Watchdog
+        annotations:
+          message: |
+            This is an alert meant to ensure that the entire alerting pipeline is functional.
+            This alert is always firing, therefore it should always be firing in Alertmanager
+            and always fire against a receiver. There are integrations with various notification
+            mechanisms that send a notification when this alert is not firing. For example the
+            "DeadMansSnitch" integration in PagerDuty.
+        expr: vector(1)
+        labels:
+          severity: none
+  alerts: |
+    {}
+  prometheus.yml: |
+    global:
+      evaluation_interval: 1m
+      scrape_interval: 1m
+      scrape_timeout: 10s
+    rule_files:
+    - /etc/config/recording_rules.yml
+    - /etc/config/alerting_rules.yml
+    - /etc/config/rules
+    - /etc/config/alerts
+    scrape_configs:
+    - job_name: prometheus
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      metrics_path: /prometheus/metrics
+      static_configs:
+      - targets:
+        - localhost:9090
+    - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      job_name: kubernetes-nodes-cadvisor
+      kubernetes_sd_configs:
+      - role: node
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - regex: (.+)
+        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+        source_labels:
+        - __meta_kubernetes_node_name
+        target_label: __metrics_path__
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+    - job_name: kubernetes-service-endpoints
+      kubernetes_sd_configs:
+      - role: endpoints
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape
+      - action: drop
+        regex: .*node-exporter.*
+        source_labels:
+        - __meta_kubernetes_service_name
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: kubernetes_node
+    - honor_labels: true
+      job_name: prometheus-pushgateway
+      kubernetes_sd_configs:
+      - role: service
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      relabel_configs:
+      - action: keep
+        regex: pushgateway
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_probe
+    - job_name: kubernetes-services
+      kubernetes_sd_configs:
+      - role: service
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      metrics_path: /probe
+      params:
+        module:
+        - http_2xx
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_probe
+      - source_labels:
+        - __address__
+        target_label: __param_target
+      - replacement: blackbox
+        target_label: __address__
+      - source_labels:
+        - __param_target
+        target_label: instance
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      metric_relabel_configs:
+      - action: drop
+        regex: /var/lib/kubelet/pods/.*
+        source_labels:
+        - mountpoint
+      - action: drop
+        regex: ^dex-app-[\w]+;([^d].*|d[^e].*|de[^x].*|dex[^-].*|dex-[^a].*|dex-a[^p].*|dex-app[^-]).*;([^k].*|kube_pod_(init_|)container_[si].*|kube_pod_status_[^p].*|kube_pod_container_resource_(limits|requests)_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - pod
+        - __name__
+      - action: drop
+        regex: ^(dex-app-[\w]+|monitoring|logging|dex-base-[\w]+);(container_network_.*|container_tasks_state|container_memory_failures_total|container_blkio_device_.*)$
+        separator: ;
+        source_labels:
+        - namespace
+        - __name__
+      - action: drop
+        regex: ^(airflow_task_.+|airflow_dag_.+)$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: ^kube-system$
+        source_labels:
+        - namespace
+      - action: drop
+        regex: ^istio_.*$
+        source_labels:
+        - __name__
+      - action: drop
+        regex: docker://.*
+        source_labels:
+        - container_id
+      - action: drop
+        regex: k8s_POD_tiller.*
+        source_labels:
+        - name
+      - action: drop
+        regex: envoy_.*
+        source_labels:
+        - __name__
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: kubernetes_pod_name
+  recording_rules.yml: |
+    groups:
+    - name: kube_container_rules
+      rules:
+      - expr: sum(container_memory_usage_bytes) by (container_name)
+        record: container:container_memory_usage_bytes:sum
+      - expr: sum(container_spec_memory_limit_bytes) by (container_name)
+        record: container:container_spec_memory_limit_bytes:sum
+      - expr: sum(container_memory_swap) by (container_name)
+        record: container:container_memory_swap:sum
+      - expr: sum(container_spec_memory_swap_limit_bytes) by (container_name)
+        record: container:container_spec_memory_swap_limit_bytes:sum
+      - expr: sum(container_memory_working_set_bytes) by (container_name)
+        record: container:container_memory_working_set_bytes:sum
+      - expr: sum(container_memory_usage_bytes)
+        record: cluster:container_memory_usage_bytes:sum
+      - expr: sum(container_spec_memory_limit_bytes)
+        record: cluster:container_spec_memory_limit_bytes:sum
+      - expr: sum(container_memory_swap)
+        record: cluster:container_memory_swap:sum
+      - expr: sum(container_spec_memory_swap_limit_bytes)
+        record: cluster:container_spec_memory_swap_limit_bytes:sum
+      - expr: sum(container_memory_working_set_bytes)
+        record: cluster:container_memory_working_set_bytes:sum
+      - expr: sum(container_cpu_load_average_10s) by (container_name)
+        record: container:container_cpu_load_average_10s:sum
+      - expr: sum(rate(container_cpu_usage_seconds_total[5m])) by (container_name)
+        record: container:container_cpu_usage:rate5m
+      - expr: sum(rate(container_cpu_cfs_throttled_seconds_total[5m])) by (container_name)
+        record: container:container_cpu_cfs_throttled:rate5m
+      - expr: sum(container_cpu_load_average_10s)
+        record: cluster:container_cpu_load_average_10s:sum
+      - expr: sum(rate(container_cpu_usage_seconds_total[5m]))
+        record: cluster:container_cpu_usage:rate5m
+      - expr: sum(rate(container_cpu_cfs_throttled_seconds_total[5m]))
+        record: cluster:container_cpu_cfs_throttled:rate5m
+      - expr: sum(container_fs_usage_bytes) by (container_name)
+        record: container:container_fs_usage_bytes:sum
+      - expr: sum(container_fs_limit_bytes) by (container_name)
+        record: container:container_fs_limit_bytes:sum
+      - expr: sum(rate(container_fs_writes_bytes_total[5m])) by (container_name)
+        record: container:container_fs_writes_bytes:rate5m
+      - expr: sum(rate(container_fs_reads_bytes_total[5m])) by (container_name)
+        record: container:container_fs_reads_bytes:rate5m
+      - expr: sum(container_fs_usage_bytes)
+        record: cluster:container_fs_usage_bytes:sum
+      - expr: sum(container_fs_limit_bytes)
+        record: cluster:container_fs_limit_bytes:sum
+      - expr: sum(rate(container_fs_writes_bytes_total[5m]))
+        record: cluster:container_fs_writes_bytes:rate5m
+      - expr: sum(rate(container_fs_reads_bytes_total[5m]))
+        record: cluster:container_fs_reads_bytes:rate5m
+      - expr: sum(rate(container_network_receive_bytes_total[5m])) by (name)
+        record: container:container_network_receive_bytes:rate5m
+      - expr: sum(rate(container_network_transmit_bytes_total[5m])) by (name)
+        record: container:container_network_transmit_bytes:rate5m
+      - expr: sum(rate(container_network_receive_errors_total[5m])) by (name)
+        record: container:container_network_receive_errors:rate5m
+      - expr: sum(rate(container_network_transmit_errors_total[5m])) by (name)
+        record: container:container_network_transmit_errors:rate5m
+      - expr: sum(rate(container_network_receive_bytes_total[5m]))
+        record: cluster:container_network_receive_bytes:rate5m
+      - expr: sum(rate(container_network_transmit_bytes_total[5m]))
+        record: cluster:container_network_transmit_bytes:rate5m
+      - expr: sum(rate(container_network_receive_errors_total[5m]))
+        record: cluster:container_network_receive_errors:rate5m
+      - expr: sum(rate(container_network_transmit_errors_total[5m]))
+        record: cluster:container_network_transmit_errors:rate5m
+    - name: kube_node_rules
+      rules:
+      - expr: node_memory_MemTotal_bytes
+        record: node:node_memory_MemTotal_bytes
+      - expr: node_memory_MemAvailable_bytes
+        record: node:node_memory_MemAvailable_bytes
+      - expr: node_memory_Active_bytes
+        record: node:node_memory_Active_bytes
+      - expr: node_memory_MemFree_bytes
+        record: node:node_memory_MemFree_bytes
+      - expr: sum(node_memory_MemTotal_bytes)
+        record: cluster:node_memory_MemTotal_bytes:sum
+      - expr: sum(node_memory_MemAvailable_bytes)
+        record: cluster:node_memory_MemAvailable_bytes:sum
+      - expr: sum(node_memory_Active_bytes)
+        record: cluster:node_memory_Active_bytes:sum
+      - expr: sum(node_memory_MemFree_bytes)
+        record: cluster:node_memory_MemFree_bytes:sum
+      - expr: sum(node_filesystem_size_bytes)
+        record: cluster:node_filesystem_size_bytes:sum
+      - expr: sum(node_filesystem_free_bytes)
+        record: cluster:node_filesystem_free_bytes:sum
+      - expr: rate(node_cpu_seconds_total[10m]) * 100
+        record: node:node_cpu_usage_percent:rate10m
+      - expr: sum(kube_node_status_capacity{resource="memory"}) by (node)
+        record: node:kube_node_status_capacity_memory_bytes
+      - expr: sum(kube_node_status_capacity{resource="memory"})
+        record: cluster:kube_node_status_capacity_memory_bytes:sum
+      - expr: sum(kube_node_status_allocatable{resource="memory"})
+        record: cluster:kube_node_status_allocatable_memory_bytes:sum
+      - expr: sum(kube_node_status_capacity{resource="memory"}) by (node)
+        record: node:kube_node_status_capacity_memory_bytes
+      - expr: sum(kube_node_status_allocatable{resource="memory"}) by (node)
+        record: node:kube_node_status_allocatable_memory_bytes:sum
+      - expr: sum(kube_node_status_capacity{resource="cpu"})
+        record: cluster:kube_node_status_capacity_cpu_cores:sum
+      - expr: sum(kube_node_status_allocatable{resource="cpu"})
+        record: cluster:kube_node_status_allocatable_cpu_cores:sum
+      - expr: sum(kube_node_status_capacity{resource="cpu"}) by (node)
+        record: node:kube_node_status_capacity_cpu_cores:sum
+      - expr: sum(kube_node_status_allocatable{resource="cpu"}) by (node)
+        record: node:kube_node_status_allocatable_cpu_cores:sum
+      - expr: sum(kube_node_status_allocatable{resource="pods"})
+        record: cluster:kube_node_status_allocatable_pods:sum
+      - expr: sum(kube_node_status_capacity{resource="pods"})
+        record: cluster:kube_node_status_capacity_pods:sum
+      - expr: sum(kube_node_status_allocatable{resource="pods"}) by (node)
+        record: node:kube_node_status_allocatable_pods:sum
+      - expr: sum(kube_node_status_capacity{resource="pods"}) by (node)
+        record: node:kube_node_status_capacity_pods:sum
+      - expr: sum(kube_node_status_condition{condition="DiskPressure", status="true"})
+        record: cluster:kube_node_status_condition_disk_pressure
+      - expr: sum(kube_node_status_condition{condition="MemoryPressure", status="true"})
+        record: cluster:kube_node_status_condition_memory_pressure
+      - expr: sum(kube_node_status_condition{condition="PIDPressure", status="true"})
+        record: cluster:kube_node_status_condition_pid_pressure
+      - expr: sum(kube_node_status_condition{condition="Ready", status="true"})
+        record: cluster:kube_node_status_condition_ready
+      - expr: kube_node_status_condition{condition="DiskPressure", status="true"}
+        record: node:kube_node_status_condition_disk_pressure
+      - expr: kube_node_status_condition{condition="MemoryPressure", status="true"}
+        record: node:kube_node_status_condition_memory_pressure
+      - expr: kube_node_status_condition{condition="PIDPressure", status="true"}
+        record: node:kube_node_status_condition_pid_pressure
+      - expr: kube_node_status_condition{condition="Ready", status="true"}
+        record: node:kube_node_status_condition_ready
+      - expr: count(kube_node_info)
+        record: cluster:kube_node_info:count
+      - expr: sum(up{job="kubernetes-nodes"})
+        record: cluster:prometheus_target_up_count
+      - expr: sum(1 - up{job="kubernetes-nodes"})
+        record: cluster:prometheus_target_down_count
+    - name: kube_pod_rules
+      rules:
+      - expr: sum(kube_pod_container_resource_requests{resource="memory"}) by (container)
+        record: container:kube_pod_container_resource_requests_memory_bytes:sum
+      - expr: sum(kube_pod_container_resource_limits{resource="memory"})  by (container)
+        record: container:kube_pod_container_resource_limits_memory_bytes:sum
+      - expr: sum(kube_pod_container_resource_requests{resource="memory"})
+        record: cluster:kube_pod_container_resource_requests_memory_bytes:sum
+      - expr: sum(kube_pod_container_resource_limits{resource="memory"})
+        record: cluster:kube_pod_container_resource_limits_memory_bytes:sum
+      - expr: sum(kube_pod_container_resource_requests{resource="cpu"})
+        record: cluster:kube_pod_container_resource_requests_cpu_cores:sum
+      - expr: sum(kube_pod_container_resource_limits{resource="cpu"})
+        record: cluster:kube_pod_container_resource_limits_cpu_cores:sum
+      - expr: sum(kube_pod_container_resource_requests{resource="cpu"}) by (container)
+        record: container:kube_pod_container_resource_requests_cpu_cores:sum
+      - expr: sum(kube_pod_container_resource_limits{resource="cpu"}) by (container)
+        record: container:kube_pod_container_resource_limits_cpu_cores:sum
+      - expr: count(kube_pod_container_info)
+        record: cluster:kube_pod_container_info:count
+      - expr: sum(kube_pod_container_status_terminated)
+        record: cluster:kube_pod_container_status_terminated:sum
+      - expr: sum(kube_pod_container_status_running)
+        record: cluster:kube_pod_container_status_running:sum
+      - expr: sum(kube_pod_container_status_waiting)
+        record: cluster:kube_pod_container_status_waiting:sum
+      - expr: sum(kube_pod_container_status_ready)
+        record: cluster:kube_pod_container_status_ready:sum
+      - expr: count(kube_pod_container_status_terminated_reason{reason!="Completed"})
+        record: cluster:kube_pod_container_status_failed_count
+      - expr: kube_pod_container_status_terminated_reason{reason!="Completed"}
+        record: kube_pod_container_status_failed
+      - expr: sum(kube_pod_container_status_terminated) by (namespace, container)
+        record: namespace:kube_pod_container_status_terminated:sum
+      - expr: sum(kube_pod_container_status_running) by (namespace, container)
+        record: namespace:kube_pod_container_status_running:sum
+      - expr: sum(kube_pod_container_status_waiting) by (namespace, container)
+        record: namespace:kube_pod_container_status_waiting:sum
+      - expr: sum(kube_pod_container_status_ready) by (namespace, container)
+        record: namespace:kube_pod_container_status_ready:sum
+      - expr: count(kube_pod_container_status_terminated_reason{reason!="Completed"})
+          by (namespace, container)
+        record: namespace:kube_pod_container_status_failed_count
+      - expr: sum(kube_pod_container_status_ready) by (namespace, container)
+        record: namespace:kube_pod_container_status_ready:sum
+      - expr: count(kube_pod_container_info) by (namespace, container)
+        record: namespace:kube_pod_container_info:count
+      - expr: count(kube_service_info)
+        record: cluster:kube_service_info:count
+      - expr: count(kube_namespace_labels)
+        record: cluster:kubernetes_namespace_labels:count
+      - expr: count(kube_service_info) by (service)
+        record: cluster:kube_service_info
+      - expr: count(kube_namespace_labels) by (namespace)
+        record: cluster:kubernetes_namespace_labels
+      - expr: count(kube_pod_info)
+        record: cluster:kube_pod_info:count
+      - expr: sum(kube_pod_info)
+        record: cluster:kube_pod_info:sum
+      - expr: count(kube_pod_info) by (namespace)
+        record: namespace:kube_pod_info:count
+      - expr: sum(kube_pod_status_phase{phase="Pending"})
+        record: cluster:kube_pod_status_phase_pending:sum
+      - expr: sum(kube_pod_status_phase{phase="Running"})
+        record: cluster:kube_pod_status_phase_running:sum
+      - expr: sum(kube_pod_status_phase{phase="Succeeded"})
+        record: cluster:kube_pod_status_phase_succeeded:sum
+      - expr: sum(kube_pod_status_phase{phase="Failed"})
+        record: cluster:kube_pod_status_phase_failed:sum
+      - expr: sum(kube_pod_status_phase{phase="Unknown"})
+        record: cluster:kube_pod_status_phase_unknown:sum
+      - expr: sum(kube_pod_status_ready)
+        record: cluster:kube_pod_status_ready:sum
+      - expr: sum(kube_pod_status_phase{phase="Pending"}) by (namespace)
+        record: namespace:kube_pod_status_phase_pending:sum
+      - expr: sum(kube_pod_status_phase{phase="Running"}) by (namespace)
+        record: namespace:kube_pod_status_phase_running:sum
+      - expr: sum(kube_pod_status_phase{phase="Succeeded"}) by (namespace)
+        record: namespace:kube_pod_status_phase_succeeded:sum
+      - expr: sum(kube_pod_status_phase{phase="Failed"}) by (namespace)
+        record: namespace:kube_pod_status_phase_failed:sum
+      - expr: sum(kube_pod_status_phase{phase="Unknown"}) by (namespace)
+        record: namespace:kube_pod_status_phase_unknown:sum
+      - expr: sum(kube_pod_status_ready) by (namespace)
+        record: namespace:kube_pod_status_ready:sum
+  rules: |
+    {}
+kind: ConfigMap
+metadata:
+  annotations:
+    meta.helm.sh/release-name: monitoring
+    meta.helm.sh/release-namespace: monitoring
+  creationTimestamp: "2024-05-15T06:26:24Z"
+  labels:
+    app: prometheus
+    app.kubernetes.io/managed-by: Helm
+    chart: prometheus-10.4.0
+    component: server
+    heritage: Helm
+    release: monitoring
+  name: monitoring-prometheus-server
+  namespace: monitoring
+  resourceVersion: "11755"
+  uid: 42857f33-04e9-4ac7-b5ee-783724beac9b
