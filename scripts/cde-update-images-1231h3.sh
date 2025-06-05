@@ -7,7 +7,7 @@ echo $0
 echo $BASH_VERSION
 # 5.2.37(1)-release
 kubectl version --client
-# Client Version: v1.30.13
+# Client Version: v1.30.*
  
 
 
