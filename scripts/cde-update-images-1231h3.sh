@@ -20,7 +20,7 @@ echo "-------------------------------------"
 # Accept DEX_APP_ID as a parameter with validation
 if [ $# -eq 0 ]; then
     echo "Error: Missing DEX_APP_ID parameter"
-    echo "Usage: $0 <dex-app-id>"
+    echo "Usage: $0 <dex-app-id> [kubeconfig-path]"
     exit 1
 fi
 
