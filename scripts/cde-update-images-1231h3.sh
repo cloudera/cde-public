@@ -245,7 +245,7 @@ main() {
     log_info "Starting CDE image update process with tag: $NEW_TAG"
     
     # Enable command printing for debugging
-    set -x
+    # set -x
     
     update_spark_runtime || log_error "Spark runtime update failed"
     update_livy_runtime || log_error "Livy runtime update failed"
