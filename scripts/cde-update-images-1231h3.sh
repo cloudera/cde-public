@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# The steps will work irrespective of spark versions, since we are replacing only the image tag. It is not required to run these for Spark 2.x VCs
+
+# The following script works in bash, confirm if you are in bash shell and on latest bash version and given kubectl version. (It could work on other bash versions, but not tested)
+
+set -o errexit   # Exit on error
+set -o pipefail  # Exit on pipe failure
+set -o nounset   # Exit on uninitialized variable
+
+# Global variables
+NEW_TAG="1.23.1-h3-b2"
+BACKUP_DIR="./backups/$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="./cde_update_images.log"
+
+# Logging functions
+log_info() {
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[INFO] [${timestamp}] $*" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[ERROR] [${timestamp}] $*" | tee -a "$LOG_FILE" >&2
+}
+
+log_warning() {
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[WARNING] [${timestamp}] $*" | tee -a "$LOG_FILE"
+}
+
+# Setup backup directory
+setup_backup_dir() {
+    mkdir -p "$BACKUP_DIR"
+    log_info "Created backup directory: $BACKUP_DIR"
+}
+
+# Backup a kubernetes object
+backup_k8s_object() {
+    local namespace=$1
+    local object_type=$2
+    local object_name=$3
+    local output_file="${BACKUP_DIR}/${namespace}_${object_type}_${object_name}.yaml"
+    
+    kubectl -n "$namespace" get "$object_type" "$object_name" -o yaml > "$output_file"
+    
+    if [ $? -eq 0 ]; then
+        log_info "Backed up $object_type/$object_name to $output_file"
+    else
+        log_error "Failed to backup $object_type/$object_name"
+        return 1
+    fi
+}
+
+# Print banner with script information
+print_banner() {
+    echo "-------------------------------------"
+    echo "CDE Image Update Script"
+    echo "Bash version: $BASH_VERSION"
+    echo "kubectl version:"
+    kubectl version --client
+    echo "Backups will be stored in: $BACKUP_DIR"
+    echo "Logs will be written to: $LOG_FILE"
+    echo "-------------------------------------"
+}
+
+# Validate input arguments
+validate_args() {
+    if [ $# -ne 2 ]; then
+        log_error "Incorrect number of parameters"
+        echo "Usage: $0 <dex-app-id> <kubeconfig-path>"
+        exit 1
+    fi
+
+    local dex_app_id=$1
+    local kubeconfig=$2
+
+    # Validate DEX_APP_ID format
+    if [[ ! $dex_app_id =~ ^dex-app-[a-zA-Z0-9_-]+$ ]]; then
+        log_error "Invalid DEX_APP_ID format. It should be in the form 'dex-app-<app_id>'"
+        exit 1
+    fi
+
+    # Validate KUBECONFIG file exists
+    if [ ! -f "$kubeconfig" ]; then
+        log_error "KUBECONFIG file not found: $kubeconfig"
+        exit 1
+    fi
+
+    # Print confirmation of validated parameters
+    log_info "DEX_APP_ID: $dex_app_id"
+    log_info "KUBECONFIG: ${kubeconfig:-<default>}"
+    echo "-------------------------------------"
+}
+
+# Setup environment variables
+setup_environment() {
+    local dex_app_id=$1
+    local kubeconfig=$2
+    
+    export KUBECONFIG=$kubeconfig
+    export NAMESPACE=$dex_app_id
+    export DEX_APP_SUFFIX=${dex_app_id#dex-app-}
+    export SPARK_DEFAULTS_CONFIGMAP="spark-defaults-conf-config-map-dex-app-${DEX_APP_SUFFIX}"
+    export SPARK_RUNTIME_KEY="spark.kubernetes.container.image" 
+    export SPARK_RUNTIME_KEY_ESCAPED="spark\.kubernetes\.container\.image"
+    export DEX_APP_CONFIGMAP="${dex_app_id}-api-cm"
+    export LIVY_RUNTIME_IMAGE_KEY_ESCAPED="dex\.yaml"
+    export LIVY_RUNTIME_IMAGE_KEY="dex.yaml"
+    export LIVY_SERVER_DEPLOYMENT="dex-app-${DEX_APP_SUFFIX}-livy"
+    export LIVY_SERVER_CONTAINER="livy"
+    
+    log_info "Environment setup completed"
+    log_info "DEX_APP_SUFFIX: $DEX_APP_SUFFIX"
+    log_info "SPARK_DEFAULTS_CONFIGMAP: $SPARK_DEFAULTS_CONFIGMAP"
+    log_info "DEX_APP_CONFIGMAP: $DEX_APP_CONFIGMAP"
+    log_info "LIVY_SERVER_DEPLOYMENT: $LIVY_SERVER_DEPLOYMENT"
+}
+
+# Update Spark runtime image
+update_spark_runtime() {
+    log_info "Starting Spark runtime image update process"
+    
+    # Backup the configmap before updating
+    backup_k8s_object "$NAMESPACE" "configmap" "$SPARK_DEFAULTS_CONFIGMAP"
+    
+    # Get current image value
+    CURRENT_IMAGE=$(kubectl -n $NAMESPACE get configmap $SPARK_DEFAULTS_CONFIGMAP -o jsonpath="{.data.$SPARK_RUNTIME_KEY_ESCAPED}")
+    log_info "Current Spark image: $CURRENT_IMAGE"
+    
+    # Replace the tag
+    NEW_IMAGE="${CURRENT_IMAGE%:*}:$NEW_TAG"
+    log_info "New Spark image will be: $NEW_IMAGE"
+    
+    # Patch the configmap
+    if kubectl -n $NAMESPACE patch configmap $SPARK_DEFAULTS_CONFIGMAP --type merge -p "{\"data\":{\"$SPARK_RUNTIME_KEY\":\"$NEW_IMAGE\"}}"; then
+        log_info "Successfully patched configmap $SPARK_DEFAULTS_CONFIGMAP"
+    else
+        log_error "Failed to patch configmap $SPARK_DEFAULTS_CONFIGMAP"
+        return 1
+    fi
+    
+    # Verify the update
+    if kubectl -n $NAMESPACE get configmap $SPARK_DEFAULTS_CONFIGMAP -o=yaml | grep $NEW_TAG; then
+        log_info "Verification successful - Spark runtime image updated to $NEW_TAG"
+    else
+        log_warning "Verification failed - Could not confirm Spark runtime update"
+    fi
+    
+    log_info "Spark runtime image update completed"
+}
+
+# Update Livy runtime image
+update_livy_runtime() {
+    log_info "Starting Livy runtime image update process"
+    
+    # Backup the configmap
+    backup_k8s_object "$NAMESPACE" "configmap" "$DEX_APP_CONFIGMAP"
+    
+    # Get the current dex.yaml value and decode any escaped newlines
+    local config_file="${BACKUP_DIR}/dex_app_config_value.yaml"
+    local updated_config_file="${BACKUP_DIR}/dex_app_config_value_updated.yaml"
+    
+    kubectl -n $NAMESPACE get configmap $DEX_APP_CONFIGMAP -o jsonpath="{.data.$LIVY_RUNTIME_IMAGE_KEY_ESCAPED}" > "$config_file"
+    log_info "Retrieved current dex.yaml configuration"
+    
+    # Update the livyRuntime.image tag (replace only the tag after the last colon)
+    sed "s|\(cloudera/dex/dex-livy-runtime[^:]*:\)[^\"]*|\1$NEW_TAG|g" "$config_file" > "$updated_config_file"
+    log_info "Updated configuration with new tag: $NEW_TAG"
+    
+    # Update the configmap with the new value
+    if kubectl -n $NAMESPACE create configmap $DEX_APP_CONFIGMAP --from-file=$LIVY_RUNTIME_IMAGE_KEY="$updated_config_file" --dry-run=client -o yaml | kubectl apply -f -; then
+        log_info "Successfully updated configmap $DEX_APP_CONFIGMAP"
+    else
+        log_error "Failed to update configmap $DEX_APP_CONFIGMAP"
+        return 1
+    fi
+    
+    # Verify update
+    if kubectl -n $NAMESPACE get configmap $DEX_APP_CONFIGMAP -o yaml | grep $NEW_TAG; then
+        log_info "Verification successful - Livy runtime image updated to $NEW_TAG"
+    else
+        log_warning "Verification failed - Could not confirm Livy runtime update"
+    fi
+    
+    log_info "Restarting dex-app-api deployment"
+    kubectl -n $NAMESPACE rollout restart deployment dex-app-${DEX_APP_SUFFIX}-api
+    
+    log_info "Livy runtime image update completed"
+}
+
+# Update Livy server image
+update_livy_server() {
+    log_info "Starting Livy server image update process"
+    
+    # Backup the deployment object
+    backup_k8s_object "$NAMESPACE" "deployment" "$LIVY_SERVER_DEPLOYMENT"
+    
+    # Get the current image
+    LIVY_SERVER_IMAGE=$(kubectl -n $NAMESPACE get deployment $LIVY_SERVER_DEPLOYMENT -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$LIVY_SERVER_CONTAINER\")].image}")
+    
+    log_info "Current Livy server image: $LIVY_SERVER_IMAGE"
+    
+    # Replace the tag in the image
+    NEW_IMAGE="${LIVY_SERVER_IMAGE%:*}:$NEW_TAG"
+    log_info "New Livy server image will be: $NEW_IMAGE"
+    
+    # Update the deployment
+    if kubectl -n $NAMESPACE set image deployment/$LIVY_SERVER_DEPLOYMENT $LIVY_SERVER_CONTAINER=$NEW_IMAGE; then
+        log_info "Successfully updated deployment image"
+    else
+        log_error "Failed to update deployment image"
+        return 1
+    fi
+    
+    # Verify the update
+    if kubectl -n $NAMESPACE get deployment $LIVY_SERVER_DEPLOYMENT -o yaml | grep $NEW_TAG; then
+        log_info "Verification successful - Livy server image updated to $NEW_TAG"
+    else
+        log_warning "Verification failed - Could not confirm Livy server update"
+    fi
+    
+    log_info "Livy server image update completed"
+}
+
+# Check if kubectl is available
+check_prerequisites() {
+    if ! command -v kubectl &> /dev/null; then
+        log_error "kubectl not found. Please install kubectl and try again."
+        exit 1
+    fi
+    
+    log_info "Prerequisites check passed"
+}
+
+# Main function
+main() {
+    : > "$LOG_FILE" # Initialize log file
+    
+    print_banner
+    check_prerequisites
+    validate_args "$@"
+    setup_backup_dir
+    setup_environment "$1" "$2"
+    
+    log_info "Starting CDE image update process with tag: $NEW_TAG"
+    
+    # Enable command printing for debugging
+    # set -x
+    
+    update_spark_runtime || log_error "Spark runtime update failed"
+    update_livy_runtime || log_error "Livy runtime update failed"
+    update_livy_server || log_error "Livy server update failed"
+    
+    # Disable command printing
+    set +x
+    
+    log_info "-------------------------------------"
+    log_info "All updates completed!"
+    log_info "-------------------------------------"
+}
+
+# Execute main function with all arguments
+main "$@"
