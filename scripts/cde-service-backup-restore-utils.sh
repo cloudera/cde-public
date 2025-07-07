@@ -183,11 +183,11 @@ set_kubeconfig() {
   log_info "Setting KUBECONFIG to $KUBECONFIG"
 }
 
-# input: cluster_id
+# input: backup_id
 # output: ENV_CRN
 step_get_env_crn() {
-  local cluster_id="$1"
-  cmd="$CDP_COMMAND de describe-service --cluster-id $cluster_id | jq -r '.service.environmentCrn'"
+  local backup_id="$1"
+  cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id | jq -r '.backup.environmentCrn'"
   log_debug "Getting env crn with: $cmd"
   ENV_CRN=$(eval "$cmd")
 }
@@ -570,13 +570,14 @@ restore_service() {
 
   # restore service, only when SKIP_SERVICE is not set
   if [[ -z "$SKIP_SERVICE" ]]; then
-    step_get_env_crn "$cluster_id_old"
-    log_info "Got env crn $ENV_CRN"
     BACKUP_ID=$(cat "$dir/.backup-no-contents.id")
     if [[ -z "$BACKUP_ID" ]]; then
       log_error "Backup up ID should not be null when restoring. Check $dir/.backup-no-contents.id"
       exit 1
     fi
+    step_get_env_crn "$BACKUP_ID"
+    log_info "Got env crn $ENV_CRN"
+    
     step_restore_cluster "$BACKUP_ID" "$ENV_CRN" "$cluster_id" "$cluster_name"
     cluster_id="$CDE_CLUSTER_ID_NEW"
   else
