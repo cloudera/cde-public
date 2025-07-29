@@ -89,8 +89,10 @@ parse_vcs() {
   fi
   local vc_file="${base_dir}/vcs-${cluster_id}.json"
 
-  cmd="$CDP_COMMAND de list-vcs --cluster-id $cluster_id > $vc_file"
-  cmd_mid "$cmd"
+  if [ ! -f "$vc_file" ]; then
+    cmd="$CDP_COMMAND de list-vcs --cluster-id $cluster_id > $vc_file"
+    cmd_mid "$cmd"
+  fi
 
   # Extract vcId and vcName from vcs.json, check only vcs in AppInstalled status, sorted by vcName
   cmd="jq -r '.vcs|map(select(.status == \"AppInstalled\"))|sort_by(.vcName)[].vcId' $vc_file"
@@ -177,7 +179,7 @@ set_kubeconfig() {
     cmd_mid "mkdir -p $base_dir"
   fi
     
-  cmd_mid "cdpcurl --profile $CDP_PROFILE -f string ${CDP_ENDPOINT_URL}/dex/api/v1/cluster/${cluster_id}/kubeconfig > $base_dir/kubeconfig-$cluster_id 2> /dev/null"
+  cmd_mid "$CDP_CURL_COMMAND -f string ${CDP_ENDPOINT_URL}/dex/api/v1/cluster/${cluster_id}/kubeconfig > $base_dir/kubeconfig-$cluster_id 2> /dev/null"
   
   export KUBECONFIG="$base_dir/kubeconfig-$cluster_id"
   log_info "Setting KUBECONFIG to $KUBECONFIG"
@@ -860,7 +862,7 @@ parse_commandline() {
   # priority: env vars > properties file > cdp config > default prod cdp url
     # read from cdp config, only set when no value from env vars and properties file
   local cdp_url
-  cdp_url=$($CDP_COMMAND configure get cdp_endpoint_url)
+  cdp_url=$($CDP_COMMAND configure get cdp_endpoint_url || true)
   if [[ -n "$cdp_url" ]] && [[ -z "$CDP_ENDPOINT_URL" ]]; then
     CDP_ENDPOINT_URL="$cdp_url"
   fi
@@ -874,7 +876,7 @@ parse_commandline() {
   
   # for CDE CLI to use the cdp credential
   local atlus_url
-  atlus_url=$($CDP_COMMAND configure get endpoint_url)
+  atlus_url=$($CDP_COMMAND configure get endpoint_url || true)
   if [[ -n "$cdp_url" ]]; then
     export CDE_CDP_ENDPOINT=$cdp_url
   fi
