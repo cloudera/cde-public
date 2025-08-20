@@ -56,6 +56,45 @@ log_debug() {
   fi
 }
 
+# run command and process the result with jq
+# input: data_name, cmd, data_key
+# output: data
+cmd_return_data() {
+  local data_name="$1"
+  local cmd="$2"
+  local data_key="$3"
+
+  if [[ -n "$data_name" ]]; then
+    log_debug "Getting $data_name with command: $cmd"
+  fi
+
+  set +e
+  data=$(eval "$cmd")
+  rc=$?
+  set -e
+  if [ $rc -gt 0 ]; then
+    log_error "The following command failed with exit code $rc:\n  $cmd"
+    exit $rc
+  fi
+  # it is too verbose to log the command output, incase it is needed, uncomment the following line
+  # log_debug "Got command output: $data"
+
+  if [[ -n "$data_key" ]]; then
+    set +e
+    data=$(echo "$data" | jq -r "$data_key")
+    rc=$?
+    set -e
+    if [ $rc -gt 0 ]; then
+      log_debug "Output of the command $cmd:\n $data"
+      log_error "Failed to extract $data_key from output of command:\n $cmd"
+      exit $rc
+    fi
+    log_debug "Extracted $data_key from output: $data"
+  fi
+
+  echo "$data"
+}
+
 #### common parts end ####
 
 # input: cluster_id, vc_id
@@ -65,10 +104,8 @@ extract_vc_host() {
   local vc_id="$2"
   
   # a VC API URL is typically "https://8vqvpnpb.cde-z5kgzqpg.dex-priv.xcu2-8y8x.dev.cldr.work/dex/api/v1"
-  cmd="$CDP_COMMAND de describe-vc --cluster-id $cluster_id --vc-id $vc_id | jq -r '.vc.vcApiUrl'"
-  log_debug "Getting VC API URL with command: $cmd"
-  url=$(eval "$cmd")
-  log_debug "Got $url"
+  cmd="$CDP_COMMAND de describe-vc --cluster-id $cluster_id --vc-id $vc_id"
+  url=$(cmd_return_data "VC API URL" "$cmd" '.vc.vcApiUrl')
   
   # Match the host, e.g. dex-priv.xcu2-8y8x.dev.cldr.work
   cmd="echo $url | sed -E 's|.*cde-.{8}\.([^/]+)/dex/.*|\1|'"
@@ -89,9 +126,27 @@ parse_vcs() {
   fi
   local vc_file="${base_dir}/vcs-${cluster_id}.json"
 
-  if [ ! -f "$vc_file" ]; then
-    cmd="$CDP_COMMAND de list-vcs --cluster-id $cluster_id > $vc_file"
-    cmd_mid "$cmd"
+  # if the cluster is in correct status, update the vc_file. Otherwise, try to use the cached file
+  cmd="$CDP_COMMAND de describe-service --cluster-id $cluster_id"
+  set +e
+  status=$(cmd_return_data "cluster status" "$cmd" '.service.status')
+  rc=$?
+  set -e
+
+  if [ $rc -eq 0 ] && ( [ "$status" == "ClusterCreationCompleted" ] || [[ "$status" == *"Maintenance"* ]] ); then
+    # Service is in right status, try to list VCs and update the vc_file
+    cmd="$CDP_COMMAND de list-vcs --cluster-id $cluster_id"
+    result=$(cmd_return_data "VCs info" "$cmd" "")
+    echo "$result" > "$vc_file"
+    log_debug "Successfully wrote VCs to $vc_file"
+  else 
+    # service does not exist or is not in correct status, check if vc_file exists
+    if [ -f "$vc_file" ]; then
+      log_info "Could not get VCs info for cluster $cluster_id, using cached file $vc_file."
+    else
+      log_error "Could not get VCs info for cluster $cluster_id, and no cached file exists at $vc_file."
+      exit 1
+    fi
   fi
 
   # Extract vcId and vcName from vcs.json, check only vcs in AppInstalled status, sorted by vcName
@@ -99,6 +154,10 @@ parse_vcs() {
   log_debug "Getting VC_IDS with: $cmd"
   # shellcheck disable=SC2207
   VC_IDS=($(eval "$cmd"))
+  if [[ ${#VC_IDS[@]} -eq 0 ]]; then
+    log_error "No VCs found in AppInstalled status for cluster $cluster_id."
+    exit 1
+  fi
   
   cmd="jq -r '.vcs|map(select(.status == \"AppInstalled\"))|sort_by(.vcName)[].vcName' $vc_file"
   log_debug "Getting VC_NAMES with: $cmd"
@@ -114,9 +173,9 @@ parse_vcs() {
 wait_for_backup_completion() {
   local backup_id=$1
   while true; do
-    cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id | jq -r '.backup.status'"
-    log_debug "Getting backup status with: $cmd"
-    backup_status=$(eval "$cmd")
+    cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id"
+    backup_status=$(cmd_return_data "backup status" "$cmd" '.backup.status')
+    
     if [ "$backup_status" == "completed" ]; then
       log_info "Backup $backup_id completed successfully"
       break
@@ -137,11 +196,7 @@ wait_for_cluster_restore() {
   
   while true; do
     cmd="$CDP_CURL_COMMAND -X GET -f string ${CDP_ENDPOINT_URL}/dex/api/v1/cluster/${cluster_id}/initialization-status"
-    log_debug "Getting initialization status with: $cmd"
-    http_return=$(eval "$cmd")
-
-    log_debug "Got service initialization status $http_return"
-    init_status=$(echo "$http_return" | jq -r '.status')
+    init_status=$(cmd_return_data "initialization status" "$cmd" '.status')
 
     current_time=$(date +%s)                 #compute the current time in each iteration
     log_time_diff=$((current_time - last_log_time)) # Time since the last log
@@ -189,19 +244,16 @@ set_kubeconfig() {
 # output: ENV_CRN
 step_get_env_crn() {
   local backup_id="$1"
-  cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id | jq -r '.backup.environmentCrn'"
-  log_debug "Getting env crn with: $cmd"
-  ENV_CRN=$(eval "$cmd")
+  cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id"
+  ENV_CRN=$(cmd_return_data "env crn" "$cmd" '.backup.environmentCrn')
 }
 
 # input: backup_id
 # output: RELATIVE_PATH
 get_relative_path() {
   local backup_id="$1"
-  
-  cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id | jq -r '.backup.archiveLocation'"
-  log_debug "Getting relative path for backup with: $cmd"
-  RELATIVE_PATH=$(eval "$cmd")
+  cmd="$CDP_COMMAND de describe-backup --backup-id $backup_id"
+  RELATIVE_PATH=$(cmd_return_data "backup relative path" "$cmd" '.backup.archiveLocation')
 }
 
 # input: cluster_id, base_dir
@@ -217,10 +269,9 @@ step_backup_no_contents() {
 
   cmd="$CDP_COMMAND de create-backup \
          --service-id $cluster_id \
-         --backup-vc-content-options $CDE_BACKUP_NO_CONTENTS_OPTIONS | \
-         jq -r '.backupID'"
+         --backup-vc-content-options $CDE_BACKUP_NO_CONTENTS_OPTIONS"
   log_info "Backing up service metadata with: $cmd"
-  BACKUP_NO_CONTENTS_ID=$(eval "$cmd")
+  BACKUP_NO_CONTENTS_ID=$(cmd_return_data "" "$cmd" '.backupID')
 
   cmd_mid "echo $BACKUP_NO_CONTENTS_ID > $dir/.backup-no-contents.id"
   log_info "Taken backup $BACKUP_NO_CONTENTS_ID of metadata for service $cluster_id, checking..."
@@ -235,9 +286,9 @@ step_backup_full() {
   local dir="$base_dir/$cluster_id"
 
   cmd="$CDP_COMMAND de create-backup \
-           --service-id $cluster_id $CDE_FULL_BACKUP_OPTIONS | jq -r '.backupID'"
+           --service-id $cluster_id $CDE_FULL_BACKUP_OPTIONS"
   log_info "Backing up full service with: $cmd"
-  BACKUP_FULL_ID=$(eval "$cmd")
+  BACKUP_FULL_ID=$(cmd_return_data "" "$cmd" '.backupID')
 
   cmd_mid "echo $BACKUP_FULL_ID >$dir/.backup-full.id"
   log_info "Taken full backup $BACKUP_FULL_ID for service $cluster_id, checking..."
@@ -265,9 +316,9 @@ step_restore_cluster() {
                   --service-name $service_name"
   fi 
   
-  cmd="$restore_cmd $CDE_SERVICE_RESTORE_OPTIONS| jq -r '.serviceID'"
+  cmd="$restore_cmd $CDE_SERVICE_RESTORE_OPTIONS"
   log_info "Restoring service with: $cmd"
-  CDE_CLUSTER_ID_NEW=$(eval "$cmd")
+  CDE_CLUSTER_ID_NEW=$(cmd_return_data "" "$cmd" '.serviceID')
 
   if [[ -z "$CDE_CLUSTER_ID_NEW" ]]; then
     log_error "Error when restoring from backup $backup_id"
@@ -631,10 +682,10 @@ check_cmds() {
   local base_dir="$2"
   prepare_data_dir "$base_dir/$cluster_id"
 
-  # if there's error, due to |jq, it will not exit by default. We'll find better ways later. 
-  check_cmd "$CDP_COMMAND de describe-service --cluster-id $cluster_id | jq '.service.name'" "Does it show the service name"
-  # if there's error, due to |jq, it will not exit by default. We'll find better ways later. 
-  check_cmd "$CDP_CURL_COMMAND -X GET -f string ${CDP_ENDPOINT_URL}/dex/api/v1/cluster/${cluster_id} | jq '.name'" "Does it show the service name"
+  # Check CDP service description
+  check_cmd "$CDP_COMMAND de describe-service --cluster-id $cluster_id" "jq '.service.name'" "Does it show the service name"
+  # Check CDP curl service info
+  check_cmd "$CDP_CURL_COMMAND -X GET -f string ${CDP_ENDPOINT_URL}/dex/api/v1/cluster/${cluster_id}" "jq '.name'" "Does it show the service name"
 
   if [[ -z "$SKIP_CONTENTS" ]]; then
     local vc_id
@@ -648,8 +699,8 @@ check_cmds() {
 
   if [[ -z "$SKIP_AIRFLOW" ]]; then 
     set_kubeconfig "$cluster_id" "$base_dir"
-    # if there's error, due to |grep dex-base, it will not exit by default. We'll find better ways later. 
-    check_cmd "kubectl get namespace | grep dex-base" "Does it show dex-base-<cluster-short-id>"
+    # Check kubectl namespace access
+    check_cmd "kubectl get namespace" "grep dex-base" "Does it show dex-base-<cluster-short-id>"
   fi
 }
 
@@ -664,19 +715,24 @@ check_prompt_cmd() {
 # If PRE_CHECK_INTERACTIVE is set, continue/exit interactively, allows fast fail.
 check_cmd() {
   local cmd="$1"
-  local msg="$2"
+  local filter_cmd="$2"
+  local msg="$3"
   log_info "Checking tool configuration: $cmd"
   set +e
   RESULT=$(eval "$cmd" 2>&1)
   rc=$?
+  set -e
   if [ $rc -gt 0 ]; then
     log_error "$RESULT"
     log_error "Please check configuration of the corresponding command"
     exit $rc
   else 
+    # Process result if filter_cmd is provided
+    if [[ -n "$filter_cmd" ]]; then
+      RESULT=$(echo "$RESULT" | eval "$filter_cmd")
+    fi
     log_info "Result: $RESULT"
   fi
-  set -e
   
   if [[ -n "$CDE_PRE_CHECK_INTERACTIVE" ]]; then
     read -r -p "$msg? (Y/n): " response
@@ -703,13 +759,13 @@ check_install() {
   set +e
   RESULT=$(command -v "$target" 2>&1)
   rc=$?
+  set -e
   if [ $rc -gt 0 ]; then
     log_error "Tool $target not installed. Please check."
     exit $rc
   else 
     log_info "Result: $RESULT"
   fi
-  set -e
 }
 
 check_installs() {
