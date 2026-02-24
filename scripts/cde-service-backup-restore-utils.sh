@@ -482,12 +482,12 @@ step_backup_airflows() {
   set_kubeconfig "$cluster_id" "$base_dir"
 
   for vc_id in "${vc_ids[@]}"; do
-    cmd="kubectl get pod -n $vc_id -l app=airflow,component=scheduler -o jsonpath=\"{.items[*].metadata.name}\""
+    cmd="kubectl get pod -n $vc_id -l app=airflow,component=scheduler --field-selector=status.phase=Running -o jsonpath=\"{.items[0].metadata.name}\""
     log_debug "Getting airflow pod with: $cmd"
     local airflow_pod
     airflow_pod=$(eval "$cmd")
     if [[ -z "$airflow_pod" ]]; then
-      log_error "Failed to get airflow pod."
+      log_error "Failed to get airflow pod with command: \"$cmd\""
       exit 1
     fi
 
@@ -525,12 +525,12 @@ step_restore_airflows() {
   for i in "${!vc_ids[@]}"; do
     local vc_id=${vc_ids[$i]}
     local vc_id_old=${vc_ids_old[$i]}
-    cmd="kubectl get pod -n $vc_id -l app=airflow,component=scheduler -o jsonpath=\"{.items[*].metadata.name}\""
+    cmd="kubectl get pod -n $vc_id -l app=airflow,component=scheduler --field-selector=status.phase=Running -o jsonpath=\"{.items[0].metadata.name}\""
     log_debug "Getting airflow pod with: $cmd"
     local airflow_pod
     airflow_pod=$(eval "$cmd")
     if [[ -z "$airflow_pod" ]]; then
-      log_error "Failed to get airflow pod."
+      log_error "Failed to get airflow pod with command: \"$cmd\""
       exit 1
     fi
 
@@ -572,6 +572,14 @@ step_mod_pause_airflow_jobs() {
   # Loop through files and replace the pattern with "is_paused_upon_creation=True"
   for file in $files; do
     cmd_mid "sed -i 's/is_paused_upon_creation=False/is_paused_upon_creation=True/g' $file"
+  done
+  
+  # Recursively find files with pattern "catchup=True"
+  files=$(grep -r -l "catchup=True" "$dir") || true
+
+  # Loop through files and replace the pattern with "catchup=False"
+  for file in $files; do
+    cmd_mid "sed -i 's/catchup=True/catchup=False/g' $file"
   done
 }
 
@@ -719,12 +727,11 @@ check_cmd() {
   local msg="$3"
   log_info "Checking tool configuration: $cmd"
   set +e
-  RESULT=$(eval "$cmd" 2>&1)
+  RESULT=$(eval "$cmd")
   rc=$?
   set -e
   if [ $rc -gt 0 ]; then
-    log_error "$RESULT"
-    log_error "Please check configuration of the corresponding command"
+    log_error "Command failed with exit code $rc. Please check configuration of the corresponding command"
     exit $rc
   else 
     # Process result if filter_cmd is provided
@@ -896,6 +903,11 @@ parse_commandline() {
       ;;
     --skip-kubeconfig)
       CDE_SKIP_KUBECONFIG=1
+      ;;
+    --service-property-override)
+      # append the property override to restore options
+      CDE_SERVICE_RESTORE_OPTIONS="--service-property-override $2 $CDE_SERVICE_RESTORE_OPTIONS"
+      shift
       ;;
     *) # Handle unknown arguments
       echo "Unknown argument: $_key"
